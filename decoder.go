@@ -166,10 +166,12 @@ const (
 	TypeHashZiplist     ValueType = 13
 	TypeListQuicklist   ValueType = 14
 	TypeStreamListPacks ValueType = 15
+	Type7Quicklist      ValueType = 18
+	Type7String         ValueType = 36
 )
 
 const (
-	rdbVersion  = 9
+	rdbVersion  = 20
 	rdb6bitLen  = 0
 	rdb14bitLen = 1
 	rdb32bitLen = 0x80
@@ -472,6 +474,26 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 		fallthrough
 	case TypeModule2:
 		return d.readModule(key, expiry)
+	case Type7Quicklist:
+		length, _, err := d.readLength()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		d.info.Encoding = "quicklist"
+		d.info.Zips = length
+		d.event.StartList(key, int64(-1), expiry, d.info)
+		for length > 0 {
+			length--
+			d.readZiplist(key, 0, false)
+		}
+		d.event.EndList(key)
+	case Type7String:
+		value, err := d.readString()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		d.info.Encoding = "string"
+		d.event.Set(key, value, expiry, d.info)
 	default:
 		return fmt.Errorf("rdb: unknown object type %d for key %s", typ, key)
 	}
