@@ -11,7 +11,7 @@ import (
 	"strconv"
 
 	"github.com/919927181/rdb/crc64"
-	"github.com/pkg/errors"
+	"github.com/juju/errors"
 )
 
 // A Decoder must be implemented to parse a RDB file.
