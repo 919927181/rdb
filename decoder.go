@@ -12,6 +12,7 @@ import (
 
 	"github.com/919927181/rdb/crc64"
 	"github.com/juju/errors"
+	"github.com/siddontang/go-log/log"
 )
 
 type Info struct {
@@ -102,6 +103,23 @@ type Decoder interface {
 	EndRDB()
 }
 
+// 验证rdb文件的合法性
+func verifyDump(d []byte) error {
+	if len(d) < 10 {
+		return fmt.Errorf("rdb: invalid dump length")
+	}
+	version := binary.LittleEndian.Uint16(d[len(d)-10:])
+	if version > uint16(rdbVersion) {
+		return fmt.Errorf("rdb: invalid version %d, expecting %d", version, rdbVersion)
+	}
+
+	if binary.LittleEndian.Uint64(d[len(d)-8:]) != crc64.Digest(d[:len(d)-8]) {
+		return fmt.Errorf("rdb: invalid CRC checksum")
+	}
+
+	return nil
+}
+
 // Decode parses a RDB file from r and calls the decode hooks on d.
 func Decode(r io.Reader, d Decoder) error {
 	decoder := &decode{d, make([]byte, 8), bufio.NewReader(r), 0, 0, nil, 0}
@@ -166,6 +184,7 @@ const (
 	TypeHashZiplist     ValueType = 13
 	TypeListQuicklist   ValueType = 14
 	TypeStreamListPacks ValueType = 15
+	TypeListListPack    ValueType = 18 //Redis7.0开始使用listpack替代了ziplist
 )
 
 const (
@@ -177,22 +196,25 @@ const (
 	rdbEncVal   = 3
 	rdbLenErr   = math.MaxUint64
 
-	rdbOpCodeModuleAux = 247
-	rdbOpCodeIdle      = 248
-	rdbOpCodeFreq      = 249
-	rdbOpCodeAux       = 250
-	rdbOpCodeResizeDB  = 251
-	rdbOpCodeExpiryMS  = 252
-	rdbOpCodeExpiry    = 253
-	rdbOpCodeSelectDB  = 254
-	rdbOpCodeEOF       = 255
+	kFlagSlotInfo      = 244 // (Redis 7.4) RDB_OPCODE_SLOT_INFO: slot info
+	kFlagFunction2     = 245 // RDB_OPCODE_FUNCTION2: function library data
+	kFlagFunction      = 246 // RDB_OPCODE_FUNCTION_PRE_GA: old function library data for 7.0 rc1 and rc2
+	rdbOpCodeModuleAux = 247 // RDB_OPCODE_MODULE_AUX: Module auxiliary data.
+	rdbOpCodeIdle      = 248 // RDB_OPCODE_IDLE: LRU idle time.
+	rdbOpCodeFreq      = 249 // RDB_OPCODE_FREQ: LFU frequency.
+	rdbOpCodeAux       = 250 // RDB_OPCODE_AUX: RDB aux field.
+	rdbOpCodeResizeDB  = 251 // RDB_OPCODE_RESIZEDB: Hash table resize hint.
+	rdbOpCodeExpiryMS  = 252 // RDB_OPCODE_EXPIRETIME_MS: Expire time in milliseconds.
+	rdbOpCodeExpiry    = 253 // RDB_OPCODE_EXPIRETIME: Old expire time in seconds.
+	rdbOpCodeSelectDB  = 254 // RDB_OPCODE_SELECTDB: DB number of the following keys.
+	rdbOpCodeEOF       = 255 // RDB_OPCODE_EOF: End of the RDB file.
 
-	rdbModuleOpCodeEOF    = 0
-	rdbModuleOpCodeSint   = 1
-	rdbModuleOpCodeUint   = 2
-	rdbModuleOpCodeFloat  = 3
-	rdbModuleOpCodeDouble = 4
-	rdbModuleOpCodeString = 5
+	rdbModuleOpCodeEOF    = 0 // RDB_MODULE_OPCODE_EOF: End of module value.
+	rdbModuleOpCodeSint   = 1 // RDB_MODULE_OPCODE_SINT: Signed integer.
+	rdbModuleOpCodeUint   = 2 // RDB_MODULE_OPCODE_UINT: Unsigned integer.
+	rdbModuleOpCodeFloat  = 3 // RDB_MODULE_OPCODE_FLOAT: Float.
+	rdbModuleOpCodeDouble = 4 // RDB_MODULE_OPCODE_DOUBLE: Double.
+	rdbModuleOpCodeString = 5 // RDB_MODULE_OPCODE_STRING: String.
 
 	rdbLoadNone  = 0
 	rdbLoadEnc   = (1 << 0)
@@ -256,6 +278,8 @@ const (
 	rdbLpEOF = 0xFF
 )
 
+// 解码，得到objType，根据objType来执行相应的解码动作
+// 读取key和属性d.readObject(key, ValueType(objType), expiry)
 func (d *decode) decode() error {
 	err := d.checkHeader()
 	if err != nil {
@@ -330,7 +354,35 @@ func (d *decode) decode() error {
 			d.event.EndRDB()
 			return nil
 		case rdbOpCodeModuleAux:
-			return errors.Errorf("unsupport module")
+			//return errors.Errorf("unsupport module")
+			_, _, err = d.readModuleType()
+			if err != nil {
+				return err
+			}
+			continue
+
+			moduleId := structure.ReadLength(rd) // module id
+			moduleName := types.ModuleTypeNameByID(moduleId)
+			log.Debugf("[%s] RDB module aux: module_id=[%d], module_name=[%s]", ld.name, moduleId, moduleName)
+			_ = structure.ReadLength(rd) // when_opcode
+			_ = structure.ReadLength(rd) // when
+			opcode := structure.ReadLength(rd)
+			for opcode != kRDBModuleOpcodeEOF {
+				switch opcode {
+				case kRDBModuleOpcodeSINT, kRDBModuleOpcodeUINT:
+					_ = structure.ReadLength(rd)
+				case kRDBModuleOpcodeFLOAT:
+					_ = structure.ReadFloat(rd)
+				case kRDBModuleOpcodeDOUBLE:
+					_ = structure.ReadDouble(rd)
+				case kRDBModuleOpcodeSTRING:
+					_ = structure.ReadString(rd)
+				default:
+					log.Panicf("module aux opcode not found. module_name=[%s], opcode=[%d]", moduleName, opcode)
+				}
+				opcode = structure.ReadLength(rd)
+			}
+
 		default:
 			key, err := d.readString()
 			if err != nil {
@@ -348,11 +400,15 @@ func (d *decode) decode() error {
 
 }
 
+// 读取redisObject,RedisObject is interface for a redis object
 func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 	d.info = &Info{
 		Idle: d.lruIdle,
 		Freq: d.lfuFreq,
 	}
+	// 调试
+	fmt.Printf("object type %d for key %s\n", typ, string(key))
+
 	switch typ {
 	case TypeString:
 		value, err := d.readString()
@@ -1314,22 +1370,6 @@ func (d *decode) readLength() (uint64, bool, error) {
 		// return uint64(length), false, err
 	}
 
-}
-
-func verifyDump(d []byte) error {
-	if len(d) < 10 {
-		return fmt.Errorf("rdb: invalid dump length")
-	}
-	version := binary.LittleEndian.Uint16(d[len(d)-10:])
-	if version > uint16(rdbVersion) {
-		return fmt.Errorf("rdb: invalid version %d, expecting %d", version, rdbVersion)
-	}
-
-	if binary.LittleEndian.Uint64(d[len(d)-8:]) != crc64.Digest(d[:len(d)-8]) {
-		return fmt.Errorf("rdb: invalid CRC checksum")
-	}
-
-	return nil
 }
 
 func lzfDecompress(in []byte, outlen int) []byte {
