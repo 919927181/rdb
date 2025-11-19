@@ -11,6 +11,9 @@ import (
 	"strconv"
 
 	"github.com/919927181/rdb/crc64"
+	"github.com/919927181/rdb/rdb/structure"
+	"github.com/919927181/rdb/rdb/types"
+
 	"github.com/juju/errors"
 	"github.com/siddontang/go-log/log"
 )
@@ -355,34 +358,28 @@ func (d *decode) decode() error {
 			return nil
 		case rdbOpCodeModuleAux:
 			//return errors.Errorf("unsupport module")
-			_, _, err = d.readModuleType()
-			if err != nil {
-				return err
-			}
-			continue
 
-			moduleId := structure.ReadLength(rd) // module id
+			moduleId := structure.ReadLength(d.r) // module id
 			moduleName := types.ModuleTypeNameByID(moduleId)
 			log.Debugf("[%s] RDB module aux: module_id=[%d], module_name=[%s]", ld.name, moduleId, moduleName)
-			_ = structure.ReadLength(rd) // when_opcode
-			_ = structure.ReadLength(rd) // when
-			opcode := structure.ReadLength(rd)
-			for opcode != kRDBModuleOpcodeEOF {
+			_ = structure.ReadLength(d.r) // when_opcode
+			_ = structure.ReadLength(d.r) // when
+			opcode := structure.ReadLength(d.r)
+			for opcode != rdbModuleOpCodeEOF {
 				switch opcode {
-				case kRDBModuleOpcodeSINT, kRDBModuleOpcodeUINT:
-					_ = structure.ReadLength(rd)
-				case kRDBModuleOpcodeFLOAT:
-					_ = structure.ReadFloat(rd)
-				case kRDBModuleOpcodeDOUBLE:
-					_ = structure.ReadDouble(rd)
-				case kRDBModuleOpcodeSTRING:
-					_ = structure.ReadString(rd)
+				case rdbModuleOpCodeSint, rdbModuleOpCodeUint:
+					_ = structure.ReadLength(d.r)
+				case rdbModuleOpCodeFloat:
+					_ = structure.ReadFloat(d.r)
+				case rdbModuleOpCodeDouble:
+					_ = structure.ReadDouble(d.r)
+				case rdbModuleOpCodeString:
+					_ = structure.ReadString(d.r)
 				default:
 					log.Panicf("module aux opcode not found. module_name=[%s], opcode=[%d]", moduleName, opcode)
 				}
-				opcode = structure.ReadLength(rd)
+				opcode = structure.ReadLength(d.r)
 			}
-
 		default:
 			key, err := d.readString()
 			if err != nil {
