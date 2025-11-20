@@ -10,10 +10,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/919927181/rdb/core/structure"
-	"github.com/919927181/rdb/core/types"
 	"github.com/919927181/rdb/crc64"
-	"github.com/919927181/rdb/internal/log"
 	"github.com/juju/errors"
 )
 
@@ -163,6 +160,9 @@ type decode struct {
 
 	info       *Info
 	rdbVersion int
+
+	withSpecialOpCode bool
+	withSpecialTypes  map[string]ModuleTypeHandleFunc
 }
 
 // ValueType of redis type
@@ -374,28 +374,12 @@ func (d *decode) decode() error {
 			d.event.EndRDB()
 			return nil
 		case rdbOpCodeModuleAux:
-			return errors.Errorf("unsupport module")
-			moduleId := structure.ReadLength(d.r) // module id
-			moduleName := types.ModuleTypeNameByID(moduleId)
-			log.Debugf("[%s] RDB module aux: module_id=[%d], module_name=[%s]", ld.name, moduleId, moduleName)
-			_ = structure.ReadLength(d.r) // when_opcode
-			_ = structure.ReadLength(d.r) // when
-			opcode := structure.ReadLength(d.r)
-			for opcode != rdbModuleOpCodeEOF {
-				switch opcode {
-				case rdbModuleOpCodeSint, rdbModuleOpCodeUint:
-					_ = structure.ReadLength(d.r)
-				case rdbModuleOpCodeFloat:
-					_ = structure.ReadFloat(d.r)
-				case rdbModuleOpCodeDouble:
-					_ = structure.ReadDouble(d.r)
-				case rdbModuleOpCodeString:
-					_ = structure.ReadString(d.r)
-				default:
-					log.Panicf("module aux opcode not found. module_name=[%s], opcode=[%d]", moduleName, opcode)
-				}
-				opcode = structure.ReadLength(d.r)
+			//return errors.Errorf("unsupport module")
+			_, _, err = dec.readModuleType()
+			if err != nil {
+				return err
 			}
+			continue
 		default:
 			key, err := d.readString()
 			if err != nil {
@@ -546,6 +530,8 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 	}
 	return nil
 }
+
+type ModuleTypeHandleFunc func(handler ModuleTypeHandler, encVersion int) (interface{}, error)
 
 func (d *decode) readModule(key []byte, expiry int64) error {
 	moduleid, _, err := d.readLength()
