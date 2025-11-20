@@ -11,11 +11,8 @@ import (
 	"strconv"
 
 	"github.com/919927181/rdb/crc64"
-	"github.com/919927181/rdb/rdb/structure"
-	"github.com/919927181/rdb/rdb/types"
 
 	"github.com/juju/errors"
-	"github.com/siddontang/go-log/log"
 )
 
 type Info struct {
@@ -357,9 +354,8 @@ func (d *decode) decode() error {
 			d.event.EndRDB()
 			return nil
 		case rdbOpCodeModuleAux:
-			//return errors.Errorf("unsupport module")
-
-			moduleId := structure.ReadLength(d.r) // module id
+			return errors.Errorf("unsupport module")
+			/*moduleId := structure.ReadLength(d.r) // module id
 			moduleName := types.ModuleTypeNameByID(moduleId)
 			log.Debugf("[%s] RDB module aux: module_id=[%d], module_name=[%s]", ld.name, moduleId, moduleName)
 			_ = structure.ReadLength(d.r) // when_opcode
@@ -379,7 +375,7 @@ func (d *decode) decode() error {
 					log.Panicf("module aux opcode not found. module_name=[%s], opcode=[%d]", moduleName, opcode)
 				}
 				opcode = structure.ReadLength(d.r)
-			}
+			}*/
 		default:
 			key, err := d.readString()
 			if err != nil {
