@@ -3,8 +3,8 @@ package types
 import (
 	"io"
 
+	"github.com/919927181/rdb/core/structure"
 	"github.com/919927181/rdb/internal/log"
-	"github.com/919927181/rdb/rdb/structure"
 )
 
 type SetObject struct {

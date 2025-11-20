@@ -10,8 +10,10 @@ import (
 	"math"
 	"strconv"
 
+	"github.com/919927181/rdb/core/structure"
+	"github.com/919927181/rdb/core/types"
 	"github.com/919927181/rdb/crc64"
-
+	"github.com/919927181/rdb/internal/log"
 	"github.com/juju/errors"
 )
 
@@ -166,25 +168,40 @@ type decode struct {
 // ValueType of redis type
 type ValueType byte
 
-// type value
+// types value
 const (
-	TypeString  ValueType = 0
+	TypeString  ValueType = 0 // RDB_TYPE_STRING
 	TypeList    ValueType = 1
 	TypeSet     ValueType = 2
 	TypeZSet    ValueType = 3
-	TypeHash    ValueType = 4
-	TypeZSet2   ValueType = 5
-	TypeModule  ValueType = 6
-	TypeModule2 ValueType = 7
+	TypeHash    ValueType = 4 // RDB_TYPE_HASH
+	TypeZSet2   ValueType = 5 // ZSET version 2 with doubles stored in binary.
+	TypeModule  ValueType = 6 // RDB_TYPE_MODULE
+	TypeModule2 ValueType = 7 // RDB_TYPE_MODULE2 Module value with annotations for parsing without the generating module being loaded.
 
+	// Object types for encoded objects.
 	TypeHashZipmap      ValueType = 9
 	TypeListZiplist     ValueType = 10
 	TypeSetIntset       ValueType = 11
 	TypeZSetZiplist     ValueType = 12
 	TypeHashZiplist     ValueType = 13
-	TypeListQuicklist   ValueType = 14
-	TypeStreamListPacks ValueType = 15
-	TypeListListPack    ValueType = 18 //Redis7.0开始使用listpack替代了ziplist
+	TypeListQuicklist   ValueType = 14 // RDB_TYPE_LIST_QUICKLIST
+	TypeStreamListPacks ValueType = 15 // RDB_TYPE_STREAM_LISTPACKS
+
+	//rdb v2.0.0 The following are added
+	TypeHashListPack     ValueType = 16 // RDB_TYPE_HASH_ZIPLIST ,Redis7.0开始使用listpack替代了ziplist，
+	TypeZSetListpack     ValueType = 17 // RDB_TYPE_ZSET_LISTPACK
+	TypeListQuicklist2   ValueType = 18 // DB_TYPE_LIST_QUICKLIST_2 https://github.com/redis/redis/pull/9357
+	TypeStreamListpacks2 ValueType = 19 // RDB_TYPE_STREAM_LISTPACKS2
+	TypeSetListpack      ValueType = 20 // RDB_TYPE_SET_LISTPACK
+	TypeStreamListpacks3 ValueType = 21 // RDB_TYPE_STREAM_LISTPACKS_3
+
+	// https://github.com/redis/redis/pull/13391
+	TypeHashMetadataPreGa ValueType = 22 // RDB_TYPE_HASH_METADATA_PRE_GA
+	TypeHashListpackExPre ValueType = 23 // RDB_TYPE_HASH_LISTPACK_EX_PRE_GA
+	TypeHashMetadata      ValueType = 24 // RDB_TYPE_HASH_METADATA
+	TypeHashListpackEx    ValueType = 25 // RDB_TYPE_HASH_LISTPACK_EX
+
 )
 
 const (
@@ -208,6 +225,9 @@ const (
 	rdbOpCodeExpiry    = 253 // RDB_OPCODE_EXPIRETIME: Old expire time in seconds.
 	rdbOpCodeSelectDB  = 254 // RDB_OPCODE_SELECTDB: DB number of the following keys.
 	rdbOpCodeEOF       = 255 // RDB_OPCODE_EOF: End of the RDB file.
+
+	//rdb v2.0.0 add
+	moduleTypeNameCharSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 	rdbModuleOpCodeEOF    = 0 // RDB_MODULE_OPCODE_EOF: End of module value.
 	rdbModuleOpCodeSint   = 1 // RDB_MODULE_OPCODE_SINT: Signed integer.
@@ -355,7 +375,7 @@ func (d *decode) decode() error {
 			return nil
 		case rdbOpCodeModuleAux:
 			return errors.Errorf("unsupport module")
-			/*moduleId := structure.ReadLength(d.r) // module id
+			moduleId := structure.ReadLength(d.r) // module id
 			moduleName := types.ModuleTypeNameByID(moduleId)
 			log.Debugf("[%s] RDB module aux: module_id=[%d], module_name=[%s]", ld.name, moduleId, moduleName)
 			_ = structure.ReadLength(d.r) // when_opcode
@@ -375,7 +395,7 @@ func (d *decode) decode() error {
 					log.Panicf("module aux opcode not found. module_name=[%s], opcode=[%d]", moduleName, opcode)
 				}
 				opcode = structure.ReadLength(d.r)
-			}*/
+			}
 		default:
 			key, err := d.readString()
 			if err != nil {

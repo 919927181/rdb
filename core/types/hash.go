@@ -4,8 +4,8 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/919927181/rdb/core/structure"
 	"github.com/919927181/rdb/internal/log"
-	"github.com/919927181/rdb/rdb/structure"
 )
 
 type HashObject struct {

@@ -6,8 +6,8 @@ import (
 	"io"
 	"strconv"
 
-	"RedisShake/internal/log"
-	"RedisShake/internal/rdb/structure"
+	"github.com/919927181/rdb/core/structure"
+	"github.com/919927181/rdb/internal/log"
 )
 
 /*

@@ -1,8 +1,9 @@
 package types
 
 import (
-	"RedisShake/internal/rdb/structure"
 	"io"
+
+	"github.com/919927181/rdb/core/structure"
 )
 
 type TairStringObject struct {

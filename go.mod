@@ -7,7 +7,6 @@ require (
 	github.com/go-stack/stack v1.8.1
 	github.com/juju/errors v1.0.0
 	github.com/rs/zerolog v1.34.0
-	github.com/siddontang/go-log v0.0.0-20190221022429-1e957dd83bed
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )

@@ -35,13 +35,15 @@ const (
 
 	// Object types for encoded objects.
 
-	rdbTypeHashZipmap       = 9
-	rdbTypeListZiplist      = 10
-	rdbTypeSetIntset        = 11
-	rdbTypeZSetZiplist      = 12
-	rdbTypeHashZiplist      = 13
-	rdbTypeListQuicklist    = 14 // RDB_TYPE_LIST_QUICKLIST
-	rdbTypeStreamListpacks  = 15 // RDB_TYPE_STREAM_LISTPACKS
+	rdbTypeHashZipmap      = 9
+	rdbTypeListZiplist     = 10
+	rdbTypeSetIntset       = 11
+	rdbTypeZSetZiplist     = 12
+	rdbTypeHashZiplist     = 13
+	rdbTypeListQuicklist   = 14 // RDB_TYPE_LIST_QUICKLIST
+	rdbTypeStreamListpacks = 15 // RDB_TYPE_STREAM_LISTPACKS
+
+	// The following are added
 	rdbTypeHashListpack     = 16 // RDB_TYPE_HASH_ZIPLIST
 	rdbTypeZSetListpack     = 17 // RDB_TYPE_ZSET_LISTPACK
 	rdbTypeListQuicklist2   = 18 // RDB_TYPE_LIST_QUICKLIST_2 https://github.com/redis/redis/pull/9357
