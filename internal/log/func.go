@@ -25,10 +25,10 @@ func Panicf(format string, args ...interface{}) {
 	errMsg := fmt.Sprintf(format, args...)
 	for _, frame := range frames {
 		frameStr := fmt.Sprintf("%+v", frame)
-		if strings.HasPrefix(frameStr, "redis-shake/main.go") {
-			frameStr = "RedisShake/cmd/" + frameStr
-		}
-		if strings.HasPrefix(frameStr, "RedisShake/internal/log/func") {
+		// if strings.HasPrefix(frameStr, "redis-shake/main.go") {
+		// 	frameStr = "RedisShake/cmd/" + frameStr
+		// }
+		if strings.HasPrefix(frameStr, "github.com/919927181/rdb/internal/log/func") {
 			continue
 		}
 		errMsg += fmt.Sprintf("\n\t\t\t%v -> %n()", frameStr, frame)

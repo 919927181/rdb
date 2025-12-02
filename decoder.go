@@ -9,8 +9,12 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"unsafe"
 
+	"github.com/919927181/rdb/core/structure"
+	"github.com/919927181/rdb/core/types"
 	"github.com/919927181/rdb/crc64"
+	"github.com/919927181/rdb/internal/log"
 	"github.com/juju/errors"
 )
 
@@ -122,7 +126,7 @@ func verifyDump(d []byte) error {
 // Decode parses a RDB file from r and calls the decode hooks on d.
 func Decode(r io.Reader, d Decoder) error {
 	decoder := &decode{d, make([]byte, 8), bufio.NewReader(r), 0, 0, nil, 0}
-	return decoder.decode()
+	return decoder.decode()  //传指针，用指针作为receiver
 }
 
 // DecodeDump a byte slice from the Redis DUMP command. The dump does not contain the
@@ -160,9 +164,6 @@ type decode struct {
 
 	info       *Info
 	rdbVersion int
-
-	withSpecialOpCode bool
-	withSpecialTypes  map[string]ModuleTypeHandleFunc
 }
 
 // ValueType of redis type
@@ -180,27 +181,27 @@ const (
 	TypeModule2 ValueType = 7 // RDB_TYPE_MODULE2 Module value with annotations for parsing without the generating module being loaded.
 
 	// Object types for encoded objects.
-	TypeHashZipmap      ValueType = 9
-	TypeListZiplist     ValueType = 10
-	TypeSetIntset       ValueType = 11
-	TypeZSetZiplist     ValueType = 12
-	TypeHashZiplist     ValueType = 13
-	TypeListQuicklist   ValueType = 14 // RDB_TYPE_LIST_QUICKLIST
+	TypeHashZipMap      ValueType = 9
+	TypeListZipList     ValueType = 10
+	TypeSetIntSet       ValueType = 11
+	TypeZSetZipList     ValueType = 12
+	TypeHashZipList     ValueType = 13
+	TypeListQuickList   ValueType = 14 // RDB_TYPE_LIST_QUICKLIST
 	TypeStreamListPacks ValueType = 15 // RDB_TYPE_STREAM_LISTPACKS
 
 	//rdb v2.0.0 The following are added
 	TypeHashListPack     ValueType = 16 // RDB_TYPE_HASH_ZIPLIST ,Redis7.0开始使用listpack替代了ziplist，
-	TypeZSetListpack     ValueType = 17 // RDB_TYPE_ZSET_LISTPACK
-	TypeListQuicklist2   ValueType = 18 // DB_TYPE_LIST_QUICKLIST_2 https://github.com/redis/redis/pull/9357
-	TypeStreamListpacks2 ValueType = 19 // RDB_TYPE_STREAM_LISTPACKS2
-	TypeSetListpack      ValueType = 20 // RDB_TYPE_SET_LISTPACK
-	TypeStreamListpacks3 ValueType = 21 // RDB_TYPE_STREAM_LISTPACKS_3
+	TypeZSetListPack	 ValueType = 17 // RDB_TYPE_ZSET_LISTPACK
+	TypeListQuickList2   ValueType = 18 // DB_TYPE_LIST_QUICKLIST_2 https://github.com/redis/redis/pull/9357
+	TypeStreamListPacks2 ValueType = 19 // RDB_TYPE_STREAM_LISTPACKS2
+	TypeSetListPack      ValueType = 20 // RDB_TYPE_SET_LISTPACK
+	TypeStreamListPacks3 ValueType = 21 // RDB_TYPE_STREAM_LISTPACKS_3
 
 	// https://github.com/redis/redis/pull/13391
 	TypeHashMetadataPreGa ValueType = 22 // RDB_TYPE_HASH_METADATA_PRE_GA
-	TypeHashListpackExPre ValueType = 23 // RDB_TYPE_HASH_LISTPACK_EX_PRE_GA
-	TypeHashMetadata      ValueType = 24 // RDB_TYPE_HASH_METADATA
-	TypeHashListpackEx    ValueType = 25 // RDB_TYPE_HASH_LISTPACK_EX
+	TypeHashListPackExPre ValueType = 23 // RDB_TYPE_HASH_LISTPACK_EX_PRE_GA
+	TypeHashMetaData      ValueType = 24 // RDB_TYPE_HASH_METADATA
+	TypeHashListPackEx    ValueType = 25 // RDB_TYPE_HASH_LISTPACK_EX
 
 )
 
@@ -298,6 +299,12 @@ const (
 	rdbLpEOF = 0xFF
 )
 
+// quicklist node container formats
+const (
+	quickListNodeContainerPlain  = 1 // QUICKLIST_NODE_CONTAINER_PLAIN
+	quickListNodeContainerPacked = 2 // QUICKLIST_NODE_CONTAINER_PACKED
+)
+
 // 解码，得到objType，根据objType来执行相应的解码动作
 // 读取key和属性d.readObject(key, ValueType(objType), expiry)
 func (d *decode) decode() error {
@@ -375,11 +382,27 @@ func (d *decode) decode() error {
 			return nil
 		case rdbOpCodeModuleAux:
 			//return errors.Errorf("unsupport module")
-			_, _, err = dec.readModuleType()
-			if err != nil {
-				return err
+			moduleId := structure.ReadLength(d.r) // module id
+			moduleName := types.ModuleTypeNameByID(moduleId)
+			log.Debugf("RDB module aux: module_id=[%d], module_name=[%s]", moduleId, moduleName)
+			_ = structure.ReadLength(d.r) // when_opcode
+			_ = structure.ReadLength(d.r) // when
+			opcode := structure.ReadLength(d.r)
+			for opcode != rdbModuleOpCodeEOF {
+				switch opcode {
+				case rdbModuleOpCodeSint, rdbModuleOpCodeUint:
+					_ = structure.ReadLength(d.r)
+				case rdbModuleOpCodeFloat:
+					_ = structure.ReadFloat(d.r)
+				case rdbModuleOpCodeDouble:
+					_ = structure.ReadDouble(d.r)
+				case rdbModuleOpCodeString:
+					_ = structure.ReadString(d.r)
+				default:
+					log.Panicf("module aux opcode not found. module_name=[%s], opcode=[%d]", moduleName, opcode)
+				}
+				opcode = structure.ReadLength(d.r)
 			}
-			continue
 		default:
 			key, err := d.readString()
 			if err != nil {
@@ -430,7 +453,7 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 			d.event.Rpush(key, value)
 		}
 		d.event.EndList(key)
-	case TypeListQuicklist:
+	case TypeListQuickList:
 		length, _, err := d.readLength()
 		if err != nil {
 			return errors.Trace(err)
@@ -443,6 +466,32 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 			d.readZiplist(key, 0, false)
 		}
 		d.event.EndList(key)
+	case TypeListQuickList2:
+		length, _, err := d.readLength()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		d.info.Encoding = "quicklist2"
+		//size := int(structure.ReadLength(rd))
+		for i := 0; i < int(length); i++ {
+			//container := structure.ReadLength(rd)
+			container, _, _ := d.readLength()
+			if int(container) == quickListNodeContainerPlain {
+				value, err := d.readString()
+				if err != nil {
+					return errors.Trace(err)
+				}
+				d.event.Rpush(key, value)
+			} else if int(container) == quickListNodeContainerPacked {
+				listPackElements := structure.ReadListpack(d.r)
+				for _, value := range listPackElements {
+					d.event.Rpush(key, StringToBytes(value))
+				}
+			} else {
+				log.Panicf("unknown quicklist container %d", container)
+			}
+		}
+		d.event.EndSet(key)
 	case TypeSet:
 		cardinality, _, err := d.readLength()
 		if err != nil {
@@ -509,15 +558,15 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 			d.event.Hset(key, field, value)
 		}
 		d.event.EndHash(key)
-	case TypeHashZipmap:
+	case TypeHashZipMap:
 		return errors.Trace(d.readZipmap(key, expiry))
-	case TypeListZiplist:
+	case TypeListZipList:
 		return errors.Trace(d.readZiplist(key, expiry, true))
-	case TypeSetIntset:
+	case TypeSetIntSet:
 		return errors.Trace(d.readIntset(key, expiry))
-	case TypeZSetZiplist:
+	case TypeZSetZipList:
 		return errors.Trace(d.readZiplistZset(key, expiry))
-	case TypeHashZiplist:
+	case TypeHashZipList:
 		return errors.Trace(d.readZiplistHash(key, expiry))
 	case TypeStreamListPacks:
 		return errors.Trace(d.readStream(key, expiry))
@@ -531,7 +580,15 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 	return nil
 }
 
-type ModuleTypeHandleFunc func(handler ModuleTypeHandler, encVersion int) (interface{}, error)
+// string 转 byte
+func StringToBytes(s string) []byte {
+	return *(*[]byte)(unsafe.Pointer(
+		&struct {
+			string
+			Cap int
+		}{s, len(s)},
+	))
+}
 
 func (d *decode) readModule(key []byte, expiry int64) error {
 	moduleid, _, err := d.readLength()
