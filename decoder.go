@@ -169,6 +169,12 @@ type decode struct {
 type ValueType byte
 
 // types value
+// string: TypeString
+// list: TypeList, TypeListZipList, TypeListQuickList, TypeListQuickList2
+// set: TypeSet, TypeSetIntSet, TypeSetListPack
+// Sorted Set（zset）: TypeZSet, TypeZSet2, TypeZSetZipList, TypeZSetListPack
+// hash: TypeHash, TypeHashZipMap, TypeHashZipList, TypeHashListPack, TypeHashMetadataPreGa, TypeHashListPackExPre, TypeHashMetaData, TypeHashListPackEx
+// 注：Redis7.0开始使用listpack替代了ziplist，小于阈值时使用listpack
 const (
     TypeString  ValueType = 0 // RDB_TYPE_STRING
     TypeList    ValueType = 1
@@ -189,7 +195,7 @@ const (
     TypeStreamListPacks ValueType = 15 // RDB_TYPE_STREAM_LISTPACKS，
 
     //rdb v2.0.0 add，注：Redis Stream 主要用于消息队列，我们通常不用redis作为mq，因此不予处理
-    TypeHashListPack     ValueType = 16 // RDB_TYPE_HASH_ZIPLIST ,Redis7.0开始使用listpack替代了ziplist，
+    TypeHashListPack     ValueType = 16 // RDB_TYPE_HASH_ZIPLIST
     TypeZSetListPack     ValueType = 17 // RDB_TYPE_ZSET_LISTPACK
     TypeListQuickList2   ValueType = 18 // DB_TYPE_LIST_QUICKLIST_2 https://github.com/redis/redis/pull/9357
     TypeStreamListPacks2 ValueType = 19 // RDB_TYPE_STREAM_LISTPACKS2
@@ -569,6 +575,8 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
         if err != nil {
             return errors.Trace(err)
         }
+		// 内存占用计算，参考对比了github.com/HDT3213/rdb/blob/master/memprofiler/memprofiler.go
+		// quickListNodeContainerPlain类型计算在Rpush，listpack计算在EndList
         d.info.Encoding = "quicklist2"
         d.info.Zips = length
         d.event.StartList(key, int64(-1), expiry, d.info)
@@ -582,9 +590,12 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
                 if err != nil {
                     return errors.Trace(err)
                 }
+				d.info.Encoding = "quicklist2"
                 d.event.Rpush(key, value)
             } else if int(container) == quickListNodeContainerPacked {
-                listPackElements := structure.ReadListpack(d.r)
+                listPackElements, buf := structure.ReadListpack2(d.r)
+                d.info.Encoding = "listpack"
+                d.info.SizeOfValue +=int(buf) //因在EndList中计算内存占用， 这儿进行了累加，不太确定是否正确。
                 for _, value2 := range listPackElements {
                     bytes := []byte(value2)
                     d.event.Rpush(key, bytes)
@@ -595,9 +606,10 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
         }
         d.event.EndList(key)
     case TypeHashListPack:
-        d.info.Encoding = "hashtablepack"
-        list := structure.ReadListpack(d.r)
+        list, buf := structure.ReadListpack2(d.r)
         size := len(list)
+        d.info.Encoding = "listpack"
+        d.info.SizeOfValue =int(buf)
         d.event.StartHash(key, int64(size/2), expiry, d.info)
         for i := 0; i < size; i += 2 {
             fieldStr := list[i]
@@ -608,13 +620,14 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
         }
         d.event.EndHash(key)
     case TypeZSetListPack:
-        list := structure.ReadListpack(d.r)
+        list, buf := structure.ReadListpack2(d.r)
         size := len(list)
         if size%2 != 0 {
             log.Panicf("zset listpack size is not even. size=[%d]", size)
         }
-        d.info.Encoding = "zsetlistpack"
-        d.event.StartZSet(key, int64(size), expiry, d.info)
+        d.info.Encoding = "listpack"
+        d.info.SizeOfValue =int(buf)
+        d.event.StartZSet(key, int64(size/2), expiry, d.info)
         for i := 0; i < size; i += 2 {
             memberStr := list[i]
             scoreStr := list[i+1]
@@ -624,9 +637,10 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
         }
         d.event.EndZSet(key)
     case TypeSetListPack:
-        elements := structure.ReadListpack(d.r)
+        elements, buf := structure.ReadListpack2(d.r)
         size := len(elements)
-        d.info.Encoding = "setlistpack"
+        d.info.Encoding = "listpack"
+        d.info.SizeOfValue =int(buf)
         d.event.StartSet(key, int64(size), expiry, d.info)
         for _, eleStr := range elements {
             elerBytes := []byte(eleStr)
@@ -1575,10 +1589,10 @@ func (d *decode) readHashListPackTtl(key []byte, expiry int64, isPre bool) error
         // read minExpire
         _ = int64(structure.ReadUint64(rd))
     }
-    list := structure.ReadListpack(rd)
+    list, buf := structure.ReadListpack2(rd)
     size := len(list)
-
-    d.info.Encoding = "hashtable" //临时处理
+    d.info.Encoding = "listpack"
+    d.info.SizeOfValue =int(buf)
     d.event.StartHash(key, int64(size/3), expiry, d.info)
 
     for i := 0; i < size; i += 3 {
