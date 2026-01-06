@@ -17,6 +17,7 @@ rdb是一个Go包，实现了对redis rdb文件的解析和编码。
  
  注：dongmx/rdb 源自github.com/cupcake/rdb，仅支持redis6，2019年10月停止维护。
 
+
 ## Installation
 
 ```
@@ -76,7 +77,7 @@ A：HDT3213/rdb V.1.3.0没有计算lru_bits占用，lru_bits默认占用24比特
 
 特别感兴趣的是：
 
- 1. 随着redis版本变化，增加新类型的读解析支持
+ 1. 随着redis版本变化，增加新类型的解析支持
  2. 优化、改善代码，提升性能
 
 
