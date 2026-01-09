@@ -91,7 +91,7 @@ type Decoder interface {
 	// If length of the list is not known, then length is -1
 	StartList(key []byte, length, expiry int64, info *Info)
 	// Rpush is called once for each value in a list.
-	// rdb v1.0.7增加NodeEncodings是为了支持redis7+的Quicklist2，qucklist2中节点有两种编码1和2，其他数据类型传0
+	// rdb v1.0.8增加NodeEncodings是为了支持redis7+的Quicklist2，qucklist2中节点有两种编码1和2，其他数据类型传0
 	Rpush(key, value []byte, NodeEncodings uint64)
 	// EndList is called when there are no more values in a list.
 	EndList(key []byte )
@@ -308,7 +308,7 @@ const (
 
 	rdbLpEOF = 0xFF
 
-	// rdb v1.0.7 add for redis7
+	// rdb v1.0.8 add for redis7
 	rdbStream2Version = 1
 	rdbStream3Version = 2
 )
@@ -1636,7 +1636,7 @@ func (d *decode) readHashListPackTtl(key []byte, expiry int64, isPre bool) error
 
 }
 
-// rdd v1.0.7 2026-01-09 add
+// rdd v1.0.8 2026-01-09 add
 // stream 消息队列 支持redis7增加的两个存储类型TypeStreamListPacks2=19，rdbTypeStreamListpacks3=21
 // 此部分参考的 github.com/linyue515/rdr 等有精力和时间了，再对比RedisShake进行梳理改善
 type StreamId struct {
