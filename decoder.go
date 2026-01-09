@@ -23,10 +23,11 @@ type Info struct {
 	Freq        int
 	SizeOfValue int
 	Zips        uint64
+	ListPacks   uint64
 }
 
 type StreamPendingEntry struct {
-	ID            []byte
+	ID            *StreamId
 	DeliveryTime  uint64
 	DeliveryCount uint64
 }
@@ -39,6 +40,7 @@ type StreamConsumerData struct {
 	Name     []byte
 	SeenTime uint64
 	Pending  []*StreamConsumerPendingEntry
+	ActiveTime uint64
 }
 
 type StreamGroup struct {
@@ -89,9 +91,10 @@ type Decoder interface {
 	// If length of the list is not known, then length is -1
 	StartList(key []byte, length, expiry int64, info *Info)
 	// Rpush is called once for each value in a list.
-	Rpush(key, value []byte)
+	// rdb v1.0.7增加NodeEncodings是为了支持redis7+的Quicklist2，qucklist2中节点有两种编码1和2，其他数据类型传0
+	Rpush(key, value []byte, NodeEncodings uint64)
 	// EndList is called when there are no more values in a list.
-	EndList(key []byte)
+	EndList(key []byte )
 	// StartZSet is called at the beginning of a sorted set.
 	// Zadd will be called exactly cardinality times before EndZSet.
 	StartZSet(key []byte, cardinality, expiry int64, info *Info)
@@ -194,7 +197,7 @@ const (
 	TypeListQuickList   ValueType = 14 // RDB_TYPE_LIST_QUICKLIST
 	TypeStreamListPacks ValueType = 15 // RDB_TYPE_STREAM_LISTPACKS，
 
-	//rdb v2.0.0 add，注：Redis Stream 主要用于消息队列，我们通常不用redis作为mq，因此不予处理
+	//rdb v1.0.5 add，注：Redis Stream 主要用于消息队列，虽然我们一般不会用它，参考 github.com/linyue515/rdr 做了支持，后期有精力时间时再参考RedisShake进行梳理
 	TypeHashListPack     ValueType = 16 // RDB_TYPE_HASH_ZIPLIST
 	TypeZSetListPack     ValueType = 17 // RDB_TYPE_ZSET_LISTPACK
 	TypeListQuickList2   ValueType = 18 // DB_TYPE_LIST_QUICKLIST_2 https://github.com/redis/redis/pull/9357
@@ -218,12 +221,12 @@ const (
 	rdb64bitLen = 0x81
 	rdbEncVal   = 3
 	rdbLenErr   = math.MaxUint64
-	//rdb v2 add for redis7
+	//rdb v1.0.5 add for redis7
 	kFlagSlotInfo  = 244 // (Redis 7.4) RDB_OPCODE_SLOT_INFO: slot info
 	kFlagFunction2 = 245 // RDB_OPCODE_FUNCTION2: function library data
 	kFlagFunction  = 246 // RDB_OPCODE_FUNCTION_PRE_GA: old function library data for 7.0 rc1 and rc2
 
-	// rdb v1 for redis6
+	// rdb v1.0.0 for redis6
 	rdbOpCodeModuleAux = 247 // RDB_OPCODE_MODULE_AUX: Module auxiliary data.
 	rdbOpCodeIdle      = 248 // RDB_OPCODE_IDLE: LRU idle time.
 	rdbOpCodeFreq      = 249 // RDB_OPCODE_FREQ: LFU frequency.
@@ -234,7 +237,7 @@ const (
 	rdbOpCodeSelectDB  = 254 // RDB_OPCODE_SELECTDB: DB number of the following keys.
 	rdbOpCodeEOF       = 255 // RDB_OPCODE_EOF: End of the RDB file.
 
-	//rdb v2 add for redis7
+	//rdb v1.0.5 add for redis7
 	moduleTypeNameCharSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 	rdbModuleOpCodeEOF    = 0 // RDB_MODULE_OPCODE_EOF: End of module value.
@@ -304,9 +307,13 @@ const (
 	rdbLpEncoding32BitStrMask = 0xFF
 
 	rdbLpEOF = 0xFF
+
+	// rdb v1.0.7 add for redis7
+	rdbStream2Version = 1
+	rdbStream3Version = 2
 )
 
-// quicklist node container formats
+// rdb v1.0.5 add for redis7. quicklist node container formats
 const (
 	quickListNodeContainerPlain  = 1 // QUICKLIST_NODE_CONTAINER_PLAIN
 	quickListNodeContainerPacked = 2 // QUICKLIST_NODE_CONTAINER_PACKED
@@ -472,7 +479,7 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 			if err != nil {
 				return errors.Trace(err)
 			}
-			d.event.Rpush(key, value)
+			d.event.Rpush(key, value, 0) //qucklist2中节点有两种编码1和2，其他数据类型传0
 		}
 		d.event.EndList(key)
 	case TypeListQuickList:
@@ -570,38 +577,41 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 		fallthrough
 	case TypeModule2:
 		return d.readModule(key, expiry)
+	//TypeListQuickList2、TypeHashListPack、TypeZsetListPack、TypeSetListPack 参考的阿里云的RedisShake，方便扩展新数据类型
 	case TypeListQuickList2:
 		length, _, err := d.readLength()
 		if err != nil {
 			return errors.Trace(err)
 		}
-		// 内存占用计算，参考对比了github.com/HDT3213/rdb/blob/master/memprofiler/memprofiler.go
-		// quickListNodeContainerPlain类型计算在Rpush，listpack计算在EndList
+		// 内存占用计算，对比了github.com/HDT3213/rdb/blob/master/memprofiler/memprofiler.go
+		// 节点类型为quickListNodeContainerPlain类的内存计算在Rpush，listpack计算在EndList
 		d.info.Encoding = "quicklist2"
 		d.info.Zips = length
+		d.info.ListPacks = 0
 		d.event.StartList(key, int64(-1), expiry, d.info)
-		for i := 0; i < int(length); i++ {
-			container, _, err2 := d.readLength()
+		for length > 0 {
+			length--
+
+			containerType, _, err2 := d.readLength()
 			if err2 != nil {
 				return errors.Trace(err)
 			}
-			if int(container) == quickListNodeContainerPlain {
+			if int(containerType) == quickListNodeContainerPlain {
 				value, err := d.readString()
 				if err != nil {
 					return errors.Trace(err)
 				}
-				d.info.Encoding = "quicklist2"
-				d.event.Rpush(key, value)
-			} else if int(container) == quickListNodeContainerPacked {
+				d.event.Rpush(key, value, containerType)
+			} else if int(containerType) == quickListNodeContainerPacked {
 				listPackElements, buf := structure.ReadListpack2(d.r)
-				d.info.Encoding = "listpack"
-				d.info.SizeOfValue += int(buf) //因在EndList中计算内存占用， 这儿进行了累加，不太确定是否正确。
+				d.info.SizeOfValue += int(buf) //Quicklist是有1个或多个quickListNode组成的链表，因在EndList中计算内存占用， 这儿进行累加
 				for _, value2 := range listPackElements {
 					bytes := []byte(value2)
-					d.event.Rpush(key, bytes)
+					d.event.Rpush(key, bytes, containerType)
 				}
+				d.info.ListPacks ++
 			} else {
-				log.Panicf("unknown quicklist container %d", container)
+				log.Panicf("unknown quicklist container %d", containerType)
 			}
 		}
 		d.event.EndList(key)
@@ -647,6 +657,10 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 			d.event.Sadd(key, elerBytes)
 		}
 		d.event.EndSet(key)
+	case TypeStreamListPacks2:
+		return errors.Trace(d.readStreamListPacks(rdbStream2Version,key, expiry))
+	case TypeStreamListPacks3:
+		return errors.Trace(d.readStreamListPacks(rdbStream3Version,key, expiry))
 	case TypeHashMetadataPreGa:
 		return errors.Trace(d.readHashTtl(key, expiry, true))
 	case TypeHashListPackExPre:
@@ -746,13 +760,17 @@ func (d *decode) readStream(key []byte, expiry int64) error {
 		for pelSize > 0 {
 			pelSize--
 			// d.readUint64()
-			rawid := make([]byte, 16)
-			n, err := io.ReadFull(d.r, rawid)
+			ms,err:=d.readUint64()
 			if err != nil {
 				return errors.Trace(err)
 			}
-			if n != 16 {
-				return errors.Errorf("expected %d got %d", 16, n)
+			seq,err := d.readUint64()
+			if err !=nil {
+				return errors.Trace(err)
+			}
+			streamID :=&StreamId{
+				Ms: ms,
+				Sequence: seq,
 			}
 
 			deliveryTime, err := d.readUint64()
@@ -765,7 +783,7 @@ func (d *decode) readStream(key []byte, expiry int64) error {
 			}
 
 			groupPendingEntries = append(groupPendingEntries, &StreamPendingEntry{
-				ID:            rawid,
+				ID:            streamID,
 				DeliveryTime:  deliveryTime,
 				DeliveryCount: deliveryCount,
 			})
@@ -1104,7 +1122,7 @@ func (d *decode) readZiplist(key []byte, expiry int64, addListEvents bool) error
 		if err != nil {
 			return errors.Trace(err)
 		}
-		d.event.Rpush(key, entry)
+		d.event.Rpush(key, entry,0)
 	}
 	if addListEvents {
 		d.event.EndList(key)
@@ -1616,4 +1634,187 @@ func (d *decode) readHashListPackTtl(key []byte, expiry int64, isPre bool) error
 	d.event.EndHash(key)
 	return nil
 
+}
+
+// rdd v1.0.7 2026-01-09 add
+// stream 消息队列 支持redis7增加的两个存储类型TypeStreamListPacks2=19，rdbTypeStreamListpacks3=21
+// 此部分参考的 github.com/linyue515/rdr 等有精力和时间了，再对比RedisShake进行梳理改善
+type StreamId struct {
+	Ms       uint64 `json:"ms"`
+    Sequence uint64 `json:"sequence"`
+}
+
+func (d *decode) readStreamId() (*StreamId, error) {
+	ms, _, err := d.readLength()
+	if err != nil {
+		return nil, err
+	}
+	seq, _, err := d.readLength()
+	if err != nil {
+		return nil, err
+	}
+	return &StreamId{
+		Ms:       ms,
+		Sequence: seq,
+	}, nil
+}
+
+func (d *decode) readStreamListPacks(version int,key []byte, expiry int64) error {
+	cardinality, _, err := d.readLength()
+    if err != nil {
+        return errors.Trace(err)
+    }
+	d.info.Encoding = "stream_v2"
+	d.event.StartStream(key, int64(cardinality), expiry, d.info)
+
+	for i := uint64(0); i < cardinality; i++ {
+        streamID, err := d.readString()
+        if err != nil {
+            return errors.Trace(err)
+        }
+        listpack, err := d.readString()
+        if err != nil {
+            return errors.Trace(err)
+        }
+        d.event.Xadd(key, streamID, listpack)
+    }
+
+    items, _, err := d.readLength()
+    if err != nil {
+        return errors.Trace(err)
+    }
+	lastId, err := d.readStreamId()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	firstId, err := d.readStreamId()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	maxDeletedId, err := d.readStreamId()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	addedCount, _, err := d.readLength()
+	if err != nil {
+		return errors.Trace(err)
+	}
+    groups, err := d.readStreamGroups(version)
+    if err != nil {
+        return errors.Trace(err)
+    }
+	streamMeta := fmt.Sprintf("%d-%d-%d-%d",lastId.Sequence,firstId.Sequence,maxDeletedId.Sequence,addedCount)
+    d.event.EndStream(key, items, streamMeta, groups)
+    return nil
+
+}
+
+func (d *decode) readStreamGroups(version int) (StreamGroups, error) {
+    count, _, err := d.readLength()
+    if err != nil {
+        return nil, err
+    }
+
+    groups := make(StreamGroups, 0, count)
+    for i := 0; i < int(count); i++ {
+        group := &StreamGroup{
+            Pending:   make([]*StreamPendingEntry, 0),
+            Consumers: make([]*StreamConsumerData, 0),
+        }
+
+        // 读取组名
+        group.Name, err = d.readString()
+        if err != nil {
+            return nil, err
+        }
+
+        // 读取最后ID
+        gIDms, _, err := d.readLength()
+        if err != nil {
+            return nil, err
+        }
+        gIDseq, _, err := d.readLength()
+        if err != nil {
+            return nil, err
+        }
+		entriesRead, _, err := d.readLength()
+		if err != nil {
+			return nil, err
+		}
+        group.LastEntryId = fmt.Sprintf("%d-%d-%d", gIDms, gIDseq,entriesRead)
+		// 读取PEL
+        pelSize, _, err := d.readLength()
+        if err != nil {
+            return nil, err
+        }
+        for j := 0; j < int(pelSize); j++ {
+            ms,err:=d.readUint64()
+			if err !=nil {
+				return nil, err
+			}
+			seq,err := d.readUint64()
+			if err !=nil {
+				return nil, err
+			}
+			streamID :=&StreamId{
+				Ms: ms,
+				Sequence: seq,
+			}
+            deliveryTime, err := d.readUint64()
+            if err != nil {
+                return nil, err
+            }
+            deliveryCount, _, err := d.readLength()
+            if err != nil {
+                return nil, err
+            }
+            group.Pending = append(group.Pending, &StreamPendingEntry{
+                ID:            streamID,
+                DeliveryTime:  deliveryTime,
+                DeliveryCount: deliveryCount,
+            })
+        }
+
+        // 读取消费者
+        consumersNum, _, err := d.readLength()
+        if err != nil {
+            return nil, err
+        }
+        for j := 0; j < int(consumersNum); j++ {
+            consumer := &StreamConsumerData{
+                Pending: make([]*StreamConsumerPendingEntry, 0),
+            }
+            consumer.Name, err = d.readString()
+            if err != nil {
+                return nil, err
+            }
+            consumer.SeenTime, err = d.readUint64()
+            if err != nil {
+                return nil, err
+            }
+			if version >=2 {
+				consumer.ActiveTime,err = d.readUint64()
+				if err != nil {
+                	return nil, err
+            	}
+			}
+            pelSize, _, err := d.readLength()
+            if err != nil {
+                return nil, err
+            }
+            for k := 0; k < int(pelSize); k++ {
+                id := make([]byte, 16)
+                if _, err := io.ReadFull(d.r, id); err != nil {
+                    return nil, err
+                }
+                consumer.Pending = append(consumer.Pending, &StreamConsumerPendingEntry{
+                    ID: id,
+                })
+            }
+            group.Consumers = append(group.Consumers, consumer)
+        }
+
+        groups = append(groups, group)
+    }
+    return groups, nil
 }
